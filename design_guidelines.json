@@ -1,0 +1,110 @@
+{
+  "theme": "light",
+  "archetype": "Organic & Earthy",
+  "domain": "Personal Finance & Life Management",
+  "mood": "Calm, organized, editorial, premium secretary",
+  "colors": {
+    "css_variables": {
+      "--background": "40 20% 97%",
+      "--foreground": "150 5% 15%",
+      "--card": "0 0% 100%",
+      "--card-foreground": "150 5% 15%",
+      "--popover": "0 0% 100%",
+      "--popover-foreground": "150 5% 15%",
+      "--primary": "140 20% 25%",
+      "--primary-foreground": "40 20% 97%",
+      "--secondary": "40 15% 90%",
+      "--secondary-foreground": "140 20% 25%",
+      "--muted": "40 10% 93%",
+      "--muted-foreground": "150 5% 45%",
+      "--accent": "135 12% 85%",
+      "--accent-foreground": "140 20% 25%",
+      "--destructive": "15 45% 55%",
+      "--destructive-foreground": "0 0% 100%",
+      "--border": "40 15% 88%",
+      "--input": "40 15% 88%",
+      "--ring": "140 20% 25%",
+      "--radius": "1rem"
+    },
+    "description": "Warm bone/sand backgrounds with deep forest green text. Avoids harsh blacks, pure whites, and generic neon/purple tech gradients. Uses Terracotta for alerts instead of pure red."
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Cormorant Garamond",
+      "body": "Manrope"
+    },
+    "scale": {
+      "h1": "text-4xl sm:text-5xl font-serif tracking-tight leading-none text-foreground",
+      "h2": "text-2xl sm:text-3xl font-serif tracking-tight leading-tight text-foreground",
+      "h3": "text-xl sm:text-2xl font-serif tracking-tight text-foreground",
+      "h4": "text-lg sm:text-xl font-sans font-medium text-foreground",
+      "body": "text-base font-sans leading-relaxed text-foreground",
+      "small": "text-sm font-sans text-muted-foreground",
+      "overline": "text-xs font-sans font-bold uppercase tracking-[0.2em] text-muted-foreground"
+    },
+    "instructions": "Import Google fonts in index.html or via CSS @import. Apply font-serif to headings and font-sans to body. Create an editorial hierarchy."
+  },
+  "layout_and_spacing": {
+    "philosophy": "Generous spacing. p-6, p-8, and p-12. Avoid cramped data density. Think editorial magazine layout.",
+    "dashboard_grid": "The 'Control Room' Grid but airy. Use grid-cols-1 md:grid-cols-3 lg:grid-cols-4 with gap-6.",
+    "max_width": "max-w-7xl mx-auto",
+    "sidebar": "Clean, hidden on mobile (hamburger), fixed on desktop. Border-right only (border-border), no shadows."
+  },
+  "surfaces_and_borders": {
+    "cards": "Flat Solid variant. bg-card with a delicate 1px border-border. No heavy drop shadows by default. Use shadow-sm only for elevation on hover.",
+    "radius": "rounded-2xl for main cards to give a softer, approachable, human touch.",
+    "glassmorphism": "Used only for sticky headers: bg-background/80 backdrop-blur-xl border-b border-border."
+  },
+  "components": {
+    "button": "Pill shaped (rounded-full) or rounded-xl. Primary uses deep forest green (primary). Hover state lightens slightly with a smooth transition.",
+    "tabs": "Editorial style: underline indicators instead of pill backgrounds. text-muted-foreground for inactive, text-primary for active.",
+    "input": "rounded-xl, border-border, bg-card, focus:ring-1 focus:ring-primary focus:border-primary. Soft, clean and minimal.",
+    "table": "Minimalist. border-b only on rows, no vertical lines. text-sm for data, generous py-4 padding.",
+    "sidebar_links": "Subtle hover with bg-accent/30 text-foreground. Active state gets a 2px left border in primary color and bg-accent/50.",
+    "badges": "rounded-full, subtle tinted backgrounds. e.g., bg-primary/10 text-primary for positive, bg-destructive/10 text-destructive for urgent."
+  },
+  "motion_and_interactions": {
+    "hover": "Subtle lift (-translate-y-0.5) and shadow-sm on interactive cards. Buttons darken/lighten smoothly.",
+    "transitions": "transition-all duration-300 ease-in-out",
+    "page_load": "Staggered fade-in for bento grid items using framer-motion."
+  },
+  "iconography": {
+    "library": "lucide-react",
+    "style": "Stroke width 1.5. Clean, minimalist. Do not use filled icons."
+  },
+  "media": {
+    "images": [
+      {
+        "url": "https://images.pexels.com/photos/36645466/pexels-photo-36645466.jpeg",
+        "category": "user_avatar",
+        "description": "Professional confident portrait for the user profile header or settings."
+      },
+      {
+        "url": "https://images.pexels.com/photos/8408550/pexels-photo-8408550.jpeg",
+        "category": "empty_state_background",
+        "description": "Clean minimalist office desk featuring a bonsai plant for natural decoration and serenity. Use for 'All Caught Up' states, Document Storage empty states, or hero areas."
+      }
+    ]
+  },
+  "accessibility": {
+    "contrast": "Ensure text meets APCA standards. Deep green on warm sand passes easily.",
+    "focus": "Clear focus rings on all inputs/buttons (focus:ring-2 focus:ring-offset-2 focus:ring-primary focus:outline-none).",
+    "testing": "All interactive elements MUST include a kebab-case data-testid attribute (e.g., data-testid=\"pay-bill-button\")."
+  },
+  "instructions_to_main_agent": [
+    "This is a React JS application (.js/.jsx files). DO NOT output TypeScript (.tsx).",
+    "Use raw HTML/Tailwind for the bento grid layout and Shadcn for complex interactive parts (Dialog, Select, Calendar, Tabs).",
+    "Update Shadcn CSS variables in index.css with the exact HSL values provided in the colors section.",
+    "Never use raw 'Inter', 'Roboto'. Inject Manrope and Cormorant Garamond via standard CSS imports or Google Fonts.",
+    "Create an 'editorial' feel: generous padding, distinct overlines for category tags, and muted secondary text.",
+    "For the AI Chat Assistant component, design it like a sleek drawer or a calm overlay, not a floating 'bubble' chatbot. It should feel like writing an email to a highly organized secretary.",
+    "Avoid typical dashboard cliches: NO bright red/green positive/negative indicators. Use Terracotta (destructive) for urgent, Deep Green (primary) for positive.",
+    "Run linting on components after making structural edits."
+  ],
+  "dependencies_to_add": [
+    "lucide-react",
+    "framer-motion",
+    "recharts",
+    "date-fns"
+  ]
+}
