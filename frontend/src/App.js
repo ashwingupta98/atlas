@@ -1,52 +1,36 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import AppShell from "@/components/layout/AppShell";
+import Dashboard from "@/pages/Dashboard";
+import Bills from "@/pages/Bills";
+import Subscriptions from "@/pages/Subscriptions";
+import Tasks from "@/pages/Tasks";
+import Renewals from "@/pages/Renewals";
+import Documents from "@/pages/Documents";
+import CalendarView from "@/pages/CalendarView";
+import Settings from "@/pages/Settings";
 
 function App() {
   return (
-    <div className="App">
+    <div className="App bg-background min-h-screen text-foreground">
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/bills" element={<Bills />} />
+            <Route path="/subscriptions" element={<Subscriptions />} />
+            <Route path="/tasks" element={<Tasks />} />
+            <Route path="/renewals" element={<Renewals />} />
+            <Route path="/documents" element={<Documents />} />
+            <Route path="/calendar" element={<CalendarView />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </AppShell>
       </BrowserRouter>
+      <Toaster richColors position="top-right" />
     </div>
   );
 }
