@@ -27,6 +27,8 @@ services:
         value: atlas
       - key: S3_ENDPOINT_URL
         value: https://ryyxfhxhgakzamjmaywr.storage.supabase.co/storage/v1/s3
+      - key: CORS_ORIGINS
+        value: https://atlas-ukwz.vercel.app
       # ---- enter these 4 secrets in the Render dashboard ----
       - key: MONGO_URL
         sync: false
