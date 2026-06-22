@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Query, Header, Response, Form
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -781,42 +781,53 @@ async def gmail_callback(code: str, state: str):
     if not record:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
     redirect_uri = record["redirect_uri"]
-    flow = _build_flow(redirect_uri)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        flow.fetch_token(code=code)
-    creds = flow.credentials
+    frontend = record.get("frontend_origin") or os.environ.get("PUBLIC_FRONTEND_URL", "")
 
-    # fetch user email
-    email = None
     try:
-        oauth_service = build("oauth2", "v2", credentials=creds)
-        info = oauth_service.userinfo().get().execute()
-        email = info.get("email")
+        flow = _build_flow(redirect_uri)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            flow.fetch_token(code=code)
+        creds = flow.credentials
+
+        # fetch user email (best-effort)
+        email = None
+        try:
+            oauth_service = build("oauth2", "v2", credentials=creds)
+            info = oauth_service.userinfo().get().execute()
+            email = info.get("email")
+        except Exception as e:
+            logger.warning(f"could not fetch user email: {e}")
+
+        expires = creds.expiry
+        if expires and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+
+        token_doc = {
+            "user_id": DEFAULT_USER_ID,
+            "access_token": creds.token,
+            "refresh_token": creds.refresh_token,
+            "expires_at": expires.isoformat() if expires else None,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "scopes": list(creds.scopes or GMAIL_SCOPES),
+            "email": email,
+            "updated_at": utc_now().isoformat(),
+        }
+        await db.gmail_tokens.update_one({"user_id": DEFAULT_USER_ID}, {"$set": token_doc}, upsert=True)
+        await db.oauth_states.delete_one({"state": state})
     except Exception as e:
-        logger.warning(f"could not fetch user email: {e}")
-
-    expires = creds.expiry
-    if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-
-    token_doc = {
-        "user_id": DEFAULT_USER_ID,
-        "access_token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "expires_at": expires.isoformat() if expires else None,
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "scopes": list(creds.scopes or GMAIL_SCOPES),
-        "email": email,
-        "updated_at": utc_now().isoformat(),
-    }
-    await db.gmail_tokens.update_one({"user_id": DEFAULT_USER_ID}, {"$set": token_doc}, upsert=True)
-    await db.oauth_states.delete_one({"state": state})
+        logger.error(f"Gmail OAuth callback failed: {e}", exc_info=True)
+        back = (frontend.rstrip("/") + "/settings") if frontend else "/settings"
+        return PlainTextResponse(
+            "Gmail connection failed during the token step.\n\n"
+            f"{type(e).__name__}: {str(e)[:600]}\n\n"
+            f"Go back to Atlas: {back}",
+            status_code=200,
+        )
 
     # redirect back to frontend
-    frontend = record.get("frontend_origin") or os.environ.get("PUBLIC_FRONTEND_URL", "")
     target = (frontend.rstrip("/") + "/settings?gmail=connected") if frontend else "/settings?gmail=connected"
     return RedirectResponse(target)
 
