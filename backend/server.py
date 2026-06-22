@@ -736,6 +736,11 @@ def _build_flow(redirect_uri: str) -> Flow:
         },
         scopes=GMAIL_SCOPES,
         redirect_uri=redirect_uri,
+        # Confidential web client (we have a client secret), so PKCE isn't needed.
+        # It also can't work here: login and callback are separate requests with
+        # separate Flow objects, so the generated code_verifier wouldn't carry over
+        # ("Missing code verifier" at the token step). Disable it.
+        autogenerate_code_verifier=False,
     )
 
 
