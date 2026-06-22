@@ -21,6 +21,7 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as GoogleRequest
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 import google.generativeai as genai
 
@@ -910,7 +911,7 @@ def _gmail_headers(payload: dict) -> dict:
 
 
 @api_router.post("/gmail/scan")
-async def gmail_scan(max_results: int = Query(20, ge=1, le=50)):
+async def gmail_scan(max_results: int = Query(100, ge=1, le=200), days: int = Query(90, ge=1, le=365)):
     creds = await _get_gmail_creds()
     if not creds:
         raise HTTPException(status_code=400, detail="Gmail not connected")
@@ -919,106 +920,150 @@ async def gmail_scan(max_results: int = Query(20, ge=1, le=50)):
 
     service = build("gmail", "v1", credentials=creds)
 
-    query = ("newer_than:90d ("
-             "subject:(invoice OR receipt OR bill OR payment OR subscription OR renewal OR "
-             "due OR statement OR \"order confirmation\" OR auto-renewal) OR "
-             "from:(billing OR no-reply OR noreply OR receipts OR invoice))")
-    listing = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+    # Gmail does the smart pre-filter BEFORE the AI sees anything: only recent,
+    # transactional-looking mail, with marketing/social/forum noise excluded.
+    query = (
+        f"newer_than:{days}d -category:promotions -category:social -category:forums "
+        "(subject:(invoice OR receipt OR bill OR payment OR subscription OR renewal OR due OR "
+        "statement OR \"order confirmation\" OR auto-renewal OR charged OR refund) "
+        "OR from:(billing OR invoice OR receipts OR statements OR noreply OR no-reply))"
+    )
+    try:
+        listing = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+    except HttpError as e:
+        st = getattr(e, "status_code", None) or getattr(getattr(e, "resp", None), "status", 502)
+        if st in (401, 403):
+            raise HTTPException(status_code=400, detail="Gmail access expired — please reconnect Gmail")
+        logger.error(f"Gmail list failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not reach Gmail, please try again")
+    except Exception as e:
+        logger.error(f"Gmail list failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not reach Gmail, please try again")
     msg_refs = listing.get("messages", []) or []
 
-    found = []
+    # Collect lightweight metadata (subject/from/date + snippet), skipping anything
+    # already imported. Metadata-only (no full body) keeps the scan fast.
+    emails = []
     seen_ids = set()
     for ref in msg_refs:
         mid = ref["id"]
         if mid in seen_ids:
             continue
         seen_ids.add(mid)
-        # skip already-imported
         existing = await db.bills.find_one({"source_email_id": mid}, {"_id": 0}) or \
                    await db.subscriptions.find_one({"source_email_id": mid}, {"_id": 0})
         if existing:
             continue
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=mid, format="metadata",
+                metadataHeaders=["Subject", "From", "Date"],
+            ).execute()
+        except Exception as e:
+            logger.warning(f"could not fetch message {mid}: {e}")
+            continue
+        headers = _gmail_headers(msg.get("payload", {}))
+        emails.append({
+            "id": mid,
+            "subject": headers.get("subject", ""),
+            "from": headers.get("from", ""),
+            "date": headers.get("date", ""),
+            "snippet": (msg.get("snippet", "") or "")[:500],
+        })
 
-        full = service.users().messages().get(userId="me", id=mid, format="full").execute()
-        payload = full.get("payload", {})
-        headers = _gmail_headers(payload)
-        body_text = _decode_gmail_body(payload)[:6000]
-        snippet = full.get("snippet", "")
-
-        prompt = (
-            "Extract life-admin information from this email. "
-            "Return STRICT JSON with this schema:\n"
-            "{ \"type\": \"bill\"|\"subscription\"|\"receipt\"|\"none\", "
-            "\"vendor\": string|null, "
-            "\"amount\": number|null, "
-            "\"currency\": string|null, "
-            "\"due_date\": ISO-date|null, "
-            "\"renewal_date\": ISO-date|null, "
-            "\"frequency\": \"weekly\"|\"monthly\"|\"quarterly\"|\"yearly\"|null, "
-            "\"category\": string|null, "
-            "\"notes\": string|null }\n"
-            "Rules: If the email is a one-time bill/invoice with a due date -> type=bill. "
-            "If it's about a recurring subscription -> type=subscription. "
-            "If it's a past receipt with no future action -> type=receipt. "
-            "If unrelated -> type=none. Only respond with JSON, no markdown.\n\n"
-            f"Subject: {headers.get('subject','')}\n"
-            f"From: {headers.get('from','')}\n"
-            f"Date: {headers.get('date','')}\n"
-            f"Snippet: {snippet}\n"
-            f"Body: {body_text}"
+    # Hand the AI batches of emails (one call per batch) instead of one call per
+    # email, so a whole month of mail is a handful of calls within the free rate limit.
+    found = []
+    imported_ids = set()
+    valid_freq = {"weekly", "monthly", "quarterly", "yearly"}
+    BATCH = 10
+    for start in range(0, len(emails), BATCH):
+        batch = emails[start:start + BATCH]
+        listing_text = "\n\n".join(
+            f"[{j}] Subject: {e['subject']}\nFrom: {e['from']}\nDate: {e['date']}\nPreview: {e['snippet']}"
+            for j, e in enumerate(batch)
         )
-
+        prompt = (
+            "You are extracting bills and subscriptions from a batch of emails. For each email "
+            "decide if it is a BILL (a one-time payment that is due), a SUBSCRIPTION (a recurring "
+            "charge), or NEITHER. Return STRICT JSON: an object with an \"items\" array containing "
+            "one entry ONLY for emails that are genuinely a bill or subscription for the user (skip "
+            "marketing, shipping updates, security alerts, newsletters, and anything else). "
+            "Each entry: { \"i\": <the [number] shown before the email>, \"type\": \"bill\"|\"subscription\", "
+            "\"vendor\": string, \"amount\": number|null, \"currency\": string|null, "
+            "\"due_date\": ISO-8601 date|null, \"renewal_date\": ISO-8601 date|null, "
+            "\"frequency\": \"weekly\"|\"monthly\"|\"quarterly\"|\"yearly\"|null, \"category\": string|null }.\n\n"
+            f"Emails:\n{listing_text}"
+        )
         try:
             extractor = genai.GenerativeModel(
                 GEMINI_MODEL,
                 system_instruction="You are a precise email data extractor. Output only valid JSON.",
             )
             raw = await extractor.generate_content_async(
-                prompt,
-                generation_config={"response_mime_type": "application/json"},
+                prompt, generation_config={"response_mime_type": "application/json"}
             )
             text = (raw.text or "").strip()
-            # strip markdown fences in case the model still wraps the JSON
             text = re.sub(r"^```(?:json)?", "", text).strip()
             text = re.sub(r"```$", "", text).strip()
-            data = json.loads(text)
+            parsed = json.loads(text)
         except Exception as e:
-            logger.warning(f"AI parse failed for {mid}: {e}")
+            logger.warning(f"AI batch parse failed (emails {start}-{start + len(batch)}): {e}")
             continue
 
-        item_type = data.get("type")
-        vendor = data.get("vendor") or headers.get("from", "Unknown")[:80]
+        items = parsed.get("items") if isinstance(parsed, dict) else parsed
+        if not isinstance(items, list):
+            continue
 
-        if item_type == "bill" and data.get("due_date"):
-            bill = Bill(
-                name=vendor,
-                amount=float(data.get("amount") or 0),
-                currency=(data.get("currency") or "USD").upper()[:3],
-                due_date=str(data["due_date"]),
-                category=data.get("category") or "general",
-                notes=data.get("notes"),
-                source="gmail",
-                source_email_id=mid,
-            )
-            await db.bills.insert_one(bill.model_dump())
-            found.append({"type": "bill", **bill.model_dump()})
-        elif item_type == "subscription" and (data.get("renewal_date") or data.get("due_date")):
-            sub = Subscription(
-                name=vendor,
-                amount=float(data.get("amount") or 0),
-                currency=(data.get("currency") or "USD").upper()[:3],
-                next_renewal=str(data.get("renewal_date") or data.get("due_date")),
-                frequency=data.get("frequency") or "monthly",
-                category=data.get("category") or "service",
-                notes=data.get("notes"),
-                source="gmail",
-                source_email_id=mid,
-            )
-            await db.subscriptions.insert_one(sub.model_dump())
-            found.append({"type": "subscription", **sub.model_dump()})
-        # receipts and 'none' are ignored for now
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                idx = int(entry.get("i"))
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= len(batch):
+                continue
+            mid = batch[idx]["id"]
+            if mid in imported_ids:
+                continue
+            item_type = entry.get("type")
+            raw_vendor = entry.get("vendor")
+            vendor = (str(raw_vendor) if raw_vendor else (batch[idx]["from"] or "Unknown"))[:80]
+            currency = str(entry.get("currency") or "USD").upper()[:3]
+            try:
+                amount = float(entry.get("amount")) if entry.get("amount") is not None else 0.0
+            except (TypeError, ValueError):
+                amount = 0.0
+            freq = str(entry.get("frequency") or "monthly").lower()
+            if freq not in valid_freq:
+                freq = "monthly"
 
-    return {"scanned": len(msg_refs), "imported": len(found), "items": found}
+            try:
+                if item_type == "bill" and entry.get("due_date"):
+                    bill = Bill(
+                        name=vendor, amount=amount, currency=currency,
+                        due_date=str(entry["due_date"]), category=entry.get("category") or "general",
+                        source="gmail", source_email_id=mid,
+                    )
+                    await db.bills.insert_one(bill.model_dump())
+                    imported_ids.add(mid)
+                    found.append({"type": "bill", **bill.model_dump()})
+                elif item_type == "subscription" and (entry.get("renewal_date") or entry.get("due_date")):
+                    sub = Subscription(
+                        name=vendor, amount=amount, currency=currency,
+                        next_renewal=str(entry.get("renewal_date") or entry.get("due_date")),
+                        frequency=freq, category=entry.get("category") or "service",
+                        source="gmail", source_email_id=mid,
+                    )
+                    await db.subscriptions.insert_one(sub.model_dump())
+                    imported_ids.add(mid)
+                    found.append({"type": "subscription", **sub.model_dump()})
+            except Exception as e:
+                logger.warning(f"could not create item from email {mid}: {e}")
+                continue
+
+    return {"scanned": len(emails), "imported": len(found), "items": found}
 
 
 # ---------------------------------------------------------------------------

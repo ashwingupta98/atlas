@@ -46,8 +46,11 @@ export default function Settings() {
   const scan = async () => {
     setScanning(true);
     try {
-      const { data } = await api.post(ENDPOINTS.gmailScan, null, { params: { max_results: 25 } });
-      toast.success(`Scanned ${data.scanned} emails · imported ${data.imported}`);
+      const { data } = await api.post(ENDPOINTS.gmailScan, null, {
+        params: { max_results: 100, days: 90 },
+        timeout: 180000,
+      });
+      toast.success(`Scanned ${data.scanned} email${data.scanned === 1 ? "" : "s"} · imported ${data.imported}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Scan failed");
     } finally { setScanning(false); }
