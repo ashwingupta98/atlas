@@ -9,7 +9,8 @@ import uuid
 import json
 import re
 import warnings
-import requests
+import boto3
+from botocore.config import Config as BotoConfig
 import base64
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -21,7 +22,7 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as GoogleRequest
 from googleapiclient.discovery import build
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+import google.generativeai as genai
 
 
 ROOT_DIR = Path(__file__).parent
@@ -34,7 +35,8 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 APP_NAME = os.environ.get("APP_NAME", "life-admin")
@@ -42,9 +44,18 @@ APP_NAME = os.environ.get("APP_NAME", "life-admin")
 # Single-user app: a single fixed user_id is used to scope data
 DEFAULT_USER_ID = "primary-user"
 
-# Object storage
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
-storage_key: Optional[str] = None
+# Configure the Gemini client once at import. No-op if the key is missing;
+# the chat and email-scan endpoints check GEMINI_API_KEY and return 503 when unset.
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+# Object storage: any S3-compatible store (Cloudflare R2, AWS S3, Backblaze B2).
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "")  # blank for AWS S3; set for R2/B2
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
+S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID", "")
+S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY", "")
+S3_REGION = os.environ.get("S3_REGION", "auto")
+_s3_client = None
 
 # Gmail scopes
 GMAIL_SCOPES = [
@@ -101,47 +112,45 @@ def clean_doc(doc: dict) -> dict:
     return doc
 
 
-def init_storage() -> Optional[str]:
-    global storage_key
-    if storage_key:
-        return storage_key
-    if not EMERGENT_LLM_KEY:
+def _get_s3():
+    """Lazily build the S3-compatible storage client (R2 / S3 / B2)."""
+    global _s3_client
+    if _s3_client is not None:
+        return _s3_client
+    if not (S3_BUCKET and S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY):
         return None
-    try:
-        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
-        resp.raise_for_status()
-        storage_key = resp.json()["storage_key"]
-        return storage_key
-    except Exception as e:
-        logger.error(f"Storage init failed: {e}")
-        return None
+    kwargs = {
+        "aws_access_key_id": S3_ACCESS_KEY_ID,
+        "aws_secret_access_key": S3_SECRET_ACCESS_KEY,
+        "region_name": S3_REGION or "auto",
+    }
+    if S3_ENDPOINT_URL:  # R2 / B2 / Supabase need an explicit endpoint; AWS S3 does not
+        kwargs["endpoint_url"] = S3_ENDPOINT_URL
+        # Supabase (and R2) serve the bucket in the path, not as a subdomain
+        kwargs["config"] = BotoConfig(s3={"addressing_style": "path"})
+    _s3_client = boto3.client("s3", **kwargs)
+    return _s3_client
 
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Object storage unavailable")
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data,
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    s3 = _get_s3()
+    if not s3:
+        raise HTTPException(status_code=503, detail="Object storage not configured")
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=path, Body=data, ContentType=content_type)
+    except Exception as e:
+        logger.error(f"Storage upload failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not store the file")
+    return {"path": path, "size": len(data)}
 
 
 def get_object(path: str):
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Object storage unavailable")
-    resp = requests.get(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+    s3 = _get_s3()
+    if not s3:
+        raise HTTPException(status_code=503, detail="Object storage not configured")
+    obj = s3.get_object(Bucket=S3_BUCKET, Key=path)
+    content_type = obj.get("ContentType", "application/octet-stream")
+    return obj["Body"].read(), content_type
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +448,6 @@ async def delete_renewal(renewal_id: str):
 # ---------------------------------------------------------------------------
 @api_router.post("/documents/upload", response_model=DocumentMeta)
 async def upload_document(file: UploadFile = File(...), category: str = Form("general"), notes: str = Form("")):
-    init_storage()
     ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
     doc_id = str(uuid.uuid4())
     path = f"{APP_NAME}/{DEFAULT_USER_ID}/{doc_id}.{ext}"
@@ -664,7 +672,7 @@ async def build_context_summary() -> str:
 
 @api_router.post("/chat")
 async def chat(req: ChatRequest):
-    if not EMERGENT_LLM_KEY:
+    if not GEMINI_API_KEY:
         raise HTTPException(status_code=503, detail="AI assistant not configured")
 
     user_msg = ChatMessage(role="user", content=req.message)
@@ -680,14 +688,10 @@ async def chat(req: ChatRequest):
         f"--- LIVE DATA CONTEXT ---\n{context}"
     )
 
-    chat_client = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=req.session_id or "default",
-        system_message=system_prompt,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
     try:
-        reply = await chat_client.send_message(UserMessage(text=req.message))
+        model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
+        result = await model.generate_content_async(req.message)
+        reply = result.text
     except Exception as e:
         logger.error(f"AI chat failed: {e}")
         raise HTTPException(status_code=500, detail=f"AI error: {str(e)[:200]}")
@@ -892,7 +896,7 @@ async def gmail_scan(max_results: int = Query(20, ge=1, le=50)):
     creds = await _get_gmail_creds()
     if not creds:
         raise HTTPException(status_code=400, detail="Gmail not connected")
-    if not EMERGENT_LLM_KEY:
+    if not GEMINI_API_KEY:
         raise HTTPException(status_code=503, detail="AI parser not configured")
 
     service = build("gmail", "v1", credentials=creds)
@@ -947,14 +951,16 @@ async def gmail_scan(max_results: int = Query(20, ge=1, le=50)):
         )
 
         try:
-            llm = LlmChat(
-                api_key=EMERGENT_LLM_KEY,
-                session_id=f"scan-{mid}",
-                system_message="You are a precise email data extractor. Output only valid JSON.",
-            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-            raw = await llm.send_message(UserMessage(text=prompt))
-            text = str(raw).strip()
-            # remove markdown fences if any
+            extractor = genai.GenerativeModel(
+                GEMINI_MODEL,
+                system_instruction="You are a precise email data extractor. Output only valid JSON.",
+            )
+            raw = await extractor.generate_content_async(
+                prompt,
+                generation_config={"response_mime_type": "application/json"},
+            )
+            text = (raw.text or "").strip()
+            # strip markdown fences in case the model still wraps the JSON
             text = re.sub(r"^```(?:json)?", "", text).strip()
             text = re.sub(r"```$", "", text).strip()
             data = json.loads(text)
@@ -1021,11 +1027,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    try:
-        init_storage()
-        logger.info("Storage initialized")
-    except Exception as e:
-        logger.warning(f"Storage init failed at startup (will retry on first use): {e}")
+    # Storage and AI clients are built lazily on first use; nothing to warm up here.
+    logger.info("Atlas API started")
 
 
 @app.on_event("shutdown")

@@ -147,7 +147,7 @@ export default function Settings() {
           </p>
           <ul className="mt-5 space-y-2 text-sm text-muted-foreground">
             <li>• Single-user (private) · runs in your workspace</li>
-            <li>• Documents stored privately in Emergent object storage</li>
+            <li>• Documents stored privately in your own cloud storage</li>
             <li>• Gmail scope: read-only · disconnect anytime</li>
           </ul>
         </div>
