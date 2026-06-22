@@ -29,7 +29,13 @@ services:
         value: https://ryyxfhxhgakzamjmaywr.storage.supabase.co/storage/v1/s3
       - key: CORS_ORIGINS
         value: https://atlas-ukwz.vercel.app
-      # ---- enter these 4 secrets in the Render dashboard ----
+      - key: PUBLIC_BACKEND_URL
+        value: https://atlas-backend-x0oy.onrender.com
+      - key: PUBLIC_FRONTEND_URL
+        value: https://atlas-ukwz.vercel.app
+      - key: OAUTHLIB_RELAX_TOKEN_SCOPE
+        value: "1"
+      # ---- enter these secrets in the Render dashboard ----
       - key: MONGO_URL
         sync: false
       - key: GEMINI_API_KEY
@@ -37,4 +43,8 @@ services:
       - key: S3_ACCESS_KEY_ID
         sync: false
       - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
         sync: false

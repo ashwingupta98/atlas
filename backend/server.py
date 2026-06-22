@@ -59,9 +59,8 @@ _s3_client = None
 
 # Gmail scopes
 GMAIL_SCOPES = [
+    # Read-only is all the scan needs (matches the "read-only access" promise in the UI).
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.labels",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
@@ -756,7 +755,10 @@ async def gmail_status():
 async def gmail_login(request_origin: Optional[str] = Query(None)):
     if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
         raise HTTPException(status_code=503, detail="Gmail OAuth not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to backend/.env")
-    backend_base = (request_origin or os.environ.get("PUBLIC_BACKEND_URL") or "").rstrip("/")
+    # The OAuth callback is a BACKEND route, so the redirect URI must point at the
+    # backend's own public URL (Render), not the frontend origin (Vercel). The frontend
+    # origin still gets stored separately below, to redirect the user back after consent.
+    backend_base = (os.environ.get("PUBLIC_BACKEND_URL") or request_origin or "").rstrip("/")
     if not backend_base:
         raise HTTPException(status_code=400, detail="Missing backend origin")
     redirect_uri = backend_base + "/api/oauth/gmail/callback"
